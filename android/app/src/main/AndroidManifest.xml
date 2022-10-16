@@ -6,6 +6,12 @@
     <!-- For apps with targetSDK=31 (Android 12) -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <application android:label="parkhere" android:name="${applicationName}" android:icon="@mipmap/ic_launcher">
+        <receiver android:exported="true" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"></action>
+            </intent-filter>
+        </receiver>
+        <receiver android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver" />
         <meta-data android:name="com.google.android.geo.API_KEY" android:value="AIzaSyB-m3oLJIzaKzKU3ppr5BqMl5318lYyThI" />
         <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop" android:theme="@style/LaunchTheme" android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode" android:hardwareAccelerated="true" android:windowSoftInputMode="adjustResize">
             <!-- Specifies an Android theme to apply to this Activity as soon as

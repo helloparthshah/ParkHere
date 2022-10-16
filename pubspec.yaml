@@ -38,6 +38,7 @@ dependencies:
   location: ^4.4.0
   csv: ^5.0.1
   android_alarm_manager_plus: ^2.0.7+1
+  flutter_local_notifications: ^8.1.1+2
 
 dev_dependencies:
   flutter_test:

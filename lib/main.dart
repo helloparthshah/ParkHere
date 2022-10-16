@@ -1,13 +1,31 @@
 import 'dart:isolate';
 import 'dart:math';
 import 'package:csv/csv.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'dart:async';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:location/location.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:parkhere/models/spot.dart';
 import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
+
+FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+    FlutterLocalNotificationsPlugin();
+
+Future showNotification(String message) async {
+  var android = const AndroidNotificationDetails(
+      'id', 'channel ', "description",
+      priority: Priority.high, importance: Importance.max);
+  var platform = NotificationDetails(android: android);
+  await flutterLocalNotificationsPlugin.show(
+    0,
+    'Updating Location',
+    message,
+    platform,
+  );
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -24,6 +42,7 @@ class MyApp extends StatelessWidget {
       title: 'Flutter Demo',
       theme: ThemeData.light(),
       darkTheme: ThemeData.dark(),
+      themeMode: ThemeMode.system,
       home: const MyHomePage(title: 'Flutter Demo Home Page'),
     );
   }
@@ -146,8 +165,53 @@ class _MyHomePageState extends State<MyHomePage> {
     });
   }
 
+  void onDidReceiveLocalNotification(
+      int id, String title, String body, String payload) async {
+    // display a dialog with the notification details, tap ok to go to another page
+    showDialog(
+      context: context,
+      builder: (BuildContext context) => CupertinoAlertDialog(
+        title: Text(title),
+        content: Text(body),
+        actions: [
+          CupertinoDialogAction(
+            isDefaultAction: true,
+            child: Text('Ok'),
+            onPressed: () async {
+              Navigator.of(context, rootNavigator: true).pop();
+              await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const MyHomePage(
+                    title: 'Test',
+                  ),
+                ),
+              );
+            },
+          )
+        ],
+      ),
+    );
+  }
+
+  Future onSelectNotification(String? payload) async {
+    await Navigator.of(context).push(MaterialPageRoute(
+        builder: (context) => const MyHomePage(
+              title: '',
+            )));
+  }
+
   @override
   void initState() {
+    var initializationSettingsAndroid =
+        const AndroidInitializationSettings('@mipmap/ic_launcher');
+
+    var initSetttings =
+        InitializationSettings(android: initializationSettingsAndroid);
+
+    flutterLocalNotificationsPlugin.initialize(initSetttings,
+        onSelectNotification: onSelectNotification);
+
     _loadMapStyles();
     initLocation();
     updateLocation();
@@ -278,10 +342,11 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
-  static void printHello() {
+  static Future<void> printHello() async {
     final DateTime now = DateTime.now();
     final int isolateId = Isolate.current.hashCode;
     print("[$now] Hello, world! isolate=${isolateId} function='$printHello'");
+    await showNotification("Time to move your car!");
   }
 
   @override
@@ -334,12 +399,23 @@ class _MyHomePageState extends State<MyHomePage> {
                             onPressed: () async {
                               print("yes");
                               print(currentSpot.timeLim);
+                              Duration duration;
+                              if (currentSpot.timeLim == double.infinity) {
+                                duration = const Duration(days: 365);
+                              } else if (currentSpot.timeLim < 1) {
+                                duration = Duration(
+                                    minutes:
+                                        (currentSpot.timeLim * 60).toInt());
+                              } else {
+                                duration = Duration(
+                                    hours: currentSpot.timeLim.toInt());
+                              }
                               setState(() {
                                 wantPark = false;
                               });
                               const int helloAlarmID = 0;
-                              await AndroidAlarmManager.periodic(
-                                const Duration(seconds: 1),
+                              await AndroidAlarmManager.oneShot(
+                                duration,
                                 helloAlarmID,
                                 printHello,
                               );
