@@ -1,8 +1,5 @@
-import 'dart:convert';
-import 'dart:developer';
-import 'dart:io';
+import 'dart:isolate';
 import 'dart:math';
-
 import 'package:csv/csv.dart';
 import 'package:flutter/material.dart';
 import 'dart:async';
@@ -10,8 +7,11 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:location/location.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:parkhere/models/spot.dart';
+import 'package:android_alarm_manager_plus/android_alarm_manager_plus.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await AndroidAlarmManager.initialize();
   runApp(const MyApp());
 }
 
@@ -22,9 +22,8 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Flutter Demo',
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-      ),
+      theme: ThemeData.light(),
+      darkTheme: ThemeData.dark(),
       home: const MyHomePage(title: 'Flutter Demo Home Page'),
     );
   }
@@ -44,11 +43,12 @@ class _MyHomePageState extends State<MyHomePage> {
 
   bool _serviceEnabled = false;
   late PermissionStatus _permissionGranted;
-  late LocationData _locationData;
+  late LocationData _locationData =
+      LocationData.fromMap({"latitude": 0.0, "longitude": 0.0});
   final Completer<GoogleMapController> _controller = Completer();
   Set<Marker> markers = Set();
 
-  static const double zoom = 18.0;
+  static const double zoom = 20.0;
 
   double calculateDistance(lat1, lon1, lat2, lon2) {
     var p = 0.017453292519943295;
@@ -59,40 +59,98 @@ class _MyHomePageState extends State<MyHomePage> {
     return 12742 * asin(sqrt(a));
   }
 
-  @override
-  void initState() {
-    initLocation();
+  late String _darkMapStyle;
+  late String _lightMapStyle;
+
+  Future _loadMapStyles() async {
+    _darkMapStyle = await rootBundle.loadString('assets/dark.json');
+    _lightMapStyle = await rootBundle.loadString('assets/light.json');
+  }
+
+  late LocationData previousLocation =
+      LocationData.fromMap({"latitude": 100.0, "longitude": 100.0});
+
+  bool isParked = false;
+  bool wantPark = true;
+
+  Spot currentSpot = Spot(0.0, 0.0, 0.0, "", "", false);
+
+  void updateLocation() {
+    late Marker marker = markers.last;
+
     location.onLocationChanged.listen((LocationData currentLocation) async {
+      if (calculateDistance(
+              previousLocation.latitude,
+              previousLocation.longitude,
+              currentLocation.latitude,
+              currentLocation.longitude) <=
+          0.0001) {
+        setState(() {
+          if (isParked == false) {
+            wantPark = true;
+          }
+          isParked = true;
+        });
+        print("Parked");
+        // get the closest marker to the current location
+        var distance = double.infinity;
+        for (var m in markers) {
+          if (m.markerId.value == "Current Location") continue;
+          var d = calculateDistance(
+              currentLocation.latitude,
+              currentLocation.longitude,
+              m.position.latitude,
+              m.position.longitude);
+          /* double multiplier = marker.infoWindow.title!.split(" ")[0] == "No"
+              ? 10
+              : double.parse(marker.infoWindow.title!.split(" ")[0]);
+          if (marker.infoWindow.title!.split(" ")[1] == "Minutes") {
+            multiplier /= 60;
+          }
+          d *= multiplier; */
+          if (d < distance) {
+            distance = d;
+            marker = m;
+          }
+        }
+      } else {
+        setState(() {
+          isParked = false;
+        });
+      }
       setState(() {
         _locationData = currentLocation;
+        previousLocation = currentLocation;
       });
-      _kGooglePlex = CameraPosition(
-        target: LatLng(_locationData.latitude!, _locationData.longitude!),
-        zoom: zoom,
-      );
-
-      final GoogleMapController controller = await _controller.future;
-      controller.animateCamera(CameraUpdate.newCameraPosition(_kGooglePlex));
-      // get the closest marker to the current location
-      var distance = double.infinity;
-      var spot = Spot(0, 0, 0, "", "", false);
-      for (var i = 0; i < spots.length; i++) {
-        var temp = calculateDistance(_locationData.latitude!,
-            _locationData.longitude!, spots[i].lat, spots[i].long);
-        if (temp < distance) {
-          distance = temp;
-          spot = spots[i];
-        }
-      }
-      print(distance);
       addMarkers();
-      setState(() {
-        markers.add(Marker(
-            markerId: MarkerId("Closest Spot"),
-            position: LatLng(spot.lat, spot.long),
-            infoWindow: InfoWindow(title: "Closest Spot")));
-      });
+      if (isParked) {
+        setState(() {
+          markers.add(Marker(
+            markerId: const MarkerId("Closest Spot"),
+            position:
+                LatLng(marker.position.latitude, marker.position.longitude),
+            infoWindow: const InfoWindow(title: "Closest Spot"),
+            icon: BitmapDescriptor.defaultMarkerWithHue(
+                BitmapDescriptor.hueOrange),
+          ));
+          // find the marker in spots
+          for (var spot in spots) {
+            if (spot.lat == marker.position.latitude &&
+                spot.long == marker.position.longitude) {
+              currentSpot = spot;
+              break;
+            }
+          }
+        });
+      }
     });
+  }
+
+  @override
+  void initState() {
+    _loadMapStyles();
+    initLocation();
+    updateLocation();
     readFile();
 
     super.initState();
@@ -117,8 +175,10 @@ class _MyHomePageState extends State<MyHomePage> {
       } else if (row[11] == "No Limit") {
         timeLimit = double.infinity;
       } else {
+        var times = row[11].toString().split(" ");
+        var t = times.length >= 2 ? (times[1] == "Hours" ? 1 : 60) : 1;
         timeLimit = row[11] != ""
-            ? double.parse(row[11].toString().split(" ")[0].replaceAll("+", ""))
+            ? double.parse(times[0].replaceAll("+", "")) / t
             : timeLimit;
       }
       Spot spot = Spot(double.parse(row[0].toString()),
@@ -132,28 +192,41 @@ class _MyHomePageState extends State<MyHomePage> {
   void addMarkers() async {
     markers.clear();
     markers.add(Marker(
-        markerId: MarkerId("Current Location"),
-        position: LatLng(_locationData.latitude!, _locationData.longitude!),
-        infoWindow: InfoWindow(title: "Current Location")));
+      markerId: const MarkerId("Current Location"),
+      position: LatLng(_locationData.latitude!, _locationData.longitude!),
+      infoWindow: const InfoWindow(title: "Current Location"),
+    ));
     for (Spot spot in spots) {
       var distance = calculateDistance(_locationData.latitude!,
           _locationData.longitude!, spot.lat, spot.long);
 
       if (distance < 0.1) {
         setState(() {
+          String title;
+          if (spot.timeLim == double.infinity) {
+            title = "No Time Limit";
+          } else if (spot.timeLim < 1) {
+            title = "${spot.timeLim * 60} Minutes";
+          } else {
+            title = "${spot.timeLim} Hours";
+          }
           if (spot.timeLim != 0) {
             markers.add(Marker(
               markerId: MarkerId(spot.lat.toString() + spot.long.toString()),
               position: LatLng(spot.lat, spot.long),
               infoWindow: InfoWindow(
-                  title: spot.timeLim == double.infinity
-                      ? "No Time Limit"
-                      : "${spot.timeLim.toInt()} Hour Limit"),
+                title: title,
+              ),
+              alpha: 0.5,
               icon: BitmapDescriptor.defaultMarkerWithHue(spot.timeLim == 0
                   ? BitmapDescriptor.hueRed
                   : spot.timeLim == double.infinity
                       ? BitmapDescriptor.hueGreen
                       : BitmapDescriptor.hueYellow),
+              onTap: () {
+                // print time limit
+                print(spot.timeLim);
+              },
             ));
           }
         });
@@ -186,47 +259,122 @@ class _MyHomePageState extends State<MyHomePage> {
         zoom: zoom,
       );
       markers.add(Marker(
-          markerId: MarkerId("Current Location"),
+          markerId: const MarkerId("Current Location"),
           position: LatLng(_locationData.latitude!, _locationData.longitude!),
-          infoWindow: InfoWindow(title: "Current Location")));
+          infoWindow: const InfoWindow(title: "Current Location")));
     });
     final GoogleMapController controller = await _controller.future;
     controller.animateCamera(CameraUpdate.newCameraPosition(_kGooglePlex));
+
+    setState(() {
+      previousLocation = _locationData;
+    });
+
+    // check if dark mode is enabled
+    if (Theme.of(context).brightness == Brightness.dark) {
+      controller.setMapStyle(_darkMapStyle);
+    } else {
+      controller.setMapStyle(_lightMapStyle);
+    }
+  }
+
+  static void printHello() {
+    final DateTime now = DateTime.now();
+    final int isolateId = Isolate.current.hashCode;
+    print("[$now] Hello, world! isolate=${isolateId} function='$printHello'");
   }
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        Column(
-          mainAxisAlignment: MainAxisAlignment.spaceAround,
-          children: [
-            Expanded(
-              child: GoogleMap(
-                // liteModeEnabled: true,
-                mapType: MapType.normal,
-                initialCameraPosition: _kGooglePlex,
-                onMapCreated: (GoogleMapController controller) {
-                  _controller.complete(controller);
-                },
-                markers: markers,
+    return Scaffold(
+      body: Stack(
+        children: [
+          Column(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              Expanded(
+                child: GoogleMap(
+                  // liteModeEnabled: true,
+                  mapType: MapType.normal,
+                  initialCameraPosition: _kGooglePlex,
+                  onMapCreated: (GoogleMapController controller) {
+                    _controller.complete(controller);
+                  },
+                  markers: markers,
+                ),
               ),
-            ),
-          ],
-        ),
-        Align(
-          alignment: Alignment.bottomCenter,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(20.0),
-            child: Container(
-              height: 200,
-              decoration: const BoxDecoration(
-                color: Colors.black,
+            ],
+          ),
+          Align(
+            alignment: Alignment.bottomCenter,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(20.0),
+              child: AnimatedContainer(
+                height: wantPark ? 200 : 0,
+                width: MediaQuery.of(context).size.width,
+                decoration: const BoxDecoration(
+                  color: Colors.black,
+                ),
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.bounceInOut,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    const Text('Did you park here?',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold)),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        TextButton(
+                            onPressed: () async {
+                              print("yes");
+                              print(currentSpot.timeLim);
+                              setState(() {
+                                wantPark = false;
+                              });
+                              const int helloAlarmID = 0;
+                              await AndroidAlarmManager.periodic(
+                                const Duration(seconds: 1),
+                                helloAlarmID,
+                                printHello,
+                              );
+                            },
+                            child: const Text('Yes')),
+                        TextButton(
+                            onPressed: () {
+                              setState(() {
+                                wantPark = false;
+                              });
+                            },
+                            child: const Text('No')),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
-        )
-      ],
+        ],
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+      floatingActionButton: FloatingActionButton(
+        onPressed: () async {
+          _kGooglePlex = CameraPosition(
+            target: LatLng(_locationData.latitude!, _locationData.longitude!),
+            zoom: zoom,
+          );
+
+          final GoogleMapController controller = await _controller.future;
+          controller
+              .animateCamera(CameraUpdate.newCameraPosition(_kGooglePlex));
+        },
+        child: const Icon(Icons.my_location),
+      ),
     );
   }
 }
